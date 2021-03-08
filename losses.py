@@ -15,6 +15,7 @@ limitations under the License.
 """
 
 # import keras
+import math
 from tensorflow import keras
 import tensorflow as tf
 import tensorflow_addons as tfa
@@ -71,8 +72,10 @@ def focal(alpha=0.25, gamma=1.5):
         normalizer = keras.backend.cast(keras.backend.shape(normalizer)[0], keras.backend.floatx())
         normalizer = keras.backend.maximum(keras.backend.cast_to_floatx(1.0), normalizer)
 
-        loss = tf.math.divide_no_nan(keras.backend.sum(cls_loss), normalizer)
-        return tf.where(tf.math.is_nan(loss), 0., loss)
+        return keras.backend.sum(cls_loss) / normalizer
+        
+        #loss = tf.math.divide_no_nan(keras.backend.sum(cls_loss), normalizer)
+        #return tf.where(tf.math.is_nan(loss), 0., loss)
 
     return _focal
 
@@ -193,63 +196,134 @@ def smooth_l1_quad(sigma=3.0):
 
 ''' Probabilistic IoU '''
 
-EPS = tf.keras.backend.epsilon() * 10.
+EPS = 1e-3
 
-def bhatacharyya_dist(x1,y1,a1,b1, x2,y2,a2,b2):
+def helinger_dist(x1,y1,a1,b1, x2,y2,a2,b2, freezed=False):
     '''
+    Dh = sqrt(1 - exp(-Db))
+    
     Db = 1/4*((x1-x2)²/(a1+a2) + (y1-y2)²/(b1+b2))-ln2 \
     1/2*ln((a1+a2)*(b1+b2)) - 1/4*ln(a1*a2*b1*b2)
     '''
-    return 1/4.*(tf.math.pow(x1-x2, 2.)/(a1+a2+EPS) + tf.math.pow(y1-y2, 2.)/(b1+b2+EPS)) - tf.math.log(2.) + \
-           1/2.*tf.math.log((a1+a2)*(b1+b2)+EPS) - 1/4.*tf.math.log(a1*a2*b1*b2+EPS)
-
-def helinger_dist(Db):
-    '''
-    Dh = sqrt(1 - exp(-Db))
-    '''
-    return tf.math.sqrt(1 - tf.math.exp(-Db))
+    
+    if freezed:
+        B1 = 1/4.*(tf.math.pow(x1-x2, 2.)/(a1+a2+EPS) + tf.math.pow(y1-y2, 2.)/(b1+b2+EPS))
+        B2 = 1/2.*tf.math.log((a1+a2)*(b1+b2)+EPS)
+        B3 = 1/4.*tf.math.log(a1*a2*b1*b2+EPS)
+        Db = B1 + B2 - B3 - tf.math.log(2.)
+    else:
+        Db = tf.math.pow(x1-x2, 2.)/(2*a1+EPS) + tf.math.pow(y1-y2, 2.)/(2*b1+EPS)
+        
+    Db = tf.clip_by_value(Db, EPS, 100.)
+    
+    return tf.math.sqrt(1 - tf.math.exp(-Db) + EPS)
 
 def get_piou_values(array):
     # xmin, ymin, xmax, ymax
-    x = (array[:,0] + array[:,2])/2.
-    y = (array[:,1] + array[:,3])/2.
-    a = tf.math.pow((array[:,2] - array[:,0]), 2.)/12.
-    b = tf.math.pow((array[:,3] - array[:,1]), 2.)/12.
+    xmin = array[:,0]; ymin = array[:,1]
+    xmax = array[:,2]; ymax = array[:,3]
+    
+    # get ProbIoU values
+    x = (xmin + xmax)/2.
+    y = (ymin + ymax)/2.
+    a = tf.math.pow((xmax - xmin), 2.)/12.
+    b = tf.math.pow((ymax - ymin), 2.)/12.
     return x, y, a, b
 
-def calc_piou(mode, target, pred, sigma=3.):
+def calc_piou(mode, target, pred, freezed=False):
     
-    l1 = helinger_dist(bhatacharyya_dist(
+    l1 = helinger_dist(
                 *get_piou_values(target),
-                *get_piou_values(pred)
-            ))
+                *get_piou_values(pred),
+                freezed=freezed
+            )
     if mode=='piou_l1':
         return l1
     
     l2 = tf.math.pow(l1, 2.)
     if mode=='piou_l2':
-        return 10. * l2
+        return l2
     
-    l3 = - tf.math.log(1. - l2)
+    l3 = - tf.math.log(1. - l2 + EPS)
     if mode=='piou_l3':
-        return 10. * l3
+        return l3
     
-    # piou smooth
-    sigma_squared = sigma ** 2.
+def calc_diou_ciou(mode, bboxes1, bboxes2):
+    # xmin, ymin, xmax, ymax
+    
+    rows = tf.cast(tf.shape(bboxes1)[0], 'float32')
+    cols = tf.cast(tf.shape(bboxes2)[0], 'float32')
+    cious = tf.zeros((rows, cols), dtype='float32')
+    dious = tf.zeros((rows, cols), dtype='float32')
+    if rows * cols == 0:
+        return cious
+    exchange = False
+    if rows > cols:
+        bboxes1, bboxes2 = bboxes2, bboxes1
+        cious = tf.zeros((cols, rows), dtype='float32')
+        dious = tf.zeros((cols, rows), dtype='float32')
+        exchange = True
 
-    return tf.where(
-            keras.backend.less(l1, 1.0 / sigma_squared),
-            0.5 * sigma_squared * l3,
-            l1 - 0.5 / sigma_squared
-        )
+    w1 = bboxes1[:, 2] - bboxes1[:, 0]
+    h1 = bboxes1[:, 3] - bboxes1[:, 1]
+    w2 = bboxes2[:, 2] - bboxes2[:, 0]
+    h2 = bboxes2[:, 3] - bboxes2[:, 1]
 
-def iou_loss(mode, phi, anchor_parameters=None):
+    area1 = w1 * h1
+    area2 = w2 * h2
+
+    center_x1 = (bboxes1[:, 2] + bboxes1[:, 0]) / 2.
+    center_y1 = (bboxes1[:, 3] + bboxes1[:, 1]) / 2.
+    center_x2 = (bboxes2[:, 2] + bboxes2[:, 0]) / 2.
+    center_y2 = (bboxes2[:, 3] + bboxes2[:, 1]) / 2.
+
+    inter_max_xy = tf.math.minimum(bboxes1[:, 2:],bboxes2[:, 2:])
+    inter_min_xy = tf.math.maximum(bboxes1[:, :2],bboxes2[:, :2])
+    out_max_xy = tf.math.maximum(bboxes1[:, 2:],bboxes2[:, 2:])
+    out_min_xy = tf.math.minimum(bboxes1[:, :2],bboxes2[:, :2])
+    
+    inter = inter_max_xy - inter_min_xy
+    inter = tf.where(inter<0., 0., inter)
+    inter_area = inter[:, 0] * inter[:, 1]
+    inter_diag = (center_x2 - center_x1)**2. + (center_y2 - center_y1)**2.
+    outer = out_max_xy - out_min_xy
+    outer = tf.where(outer<0., 0., outer)
+    outer_diag = (outer[:, 0] ** 2.) + (outer[:, 1] ** 2.)
+    union = area1+area2-inter_area
+    
+    if mode=='diou':
+        dious = inter_area / union - (inter_diag) / outer_diag
+        dious = tf.clip_by_value(dious, -1.0, 1.0)
+        
+        if exchange:
+            dious = tf.transpose(dious)
+        return 1. - dious
+    
+    u = (inter_diag) / outer_diag
+    iou = inter_area / union
+    v = (4. / (math.pi ** 2.)) * tf.math.pow((tf.math.atan(w2 / h2) - tf.math.atan(w1 / h1)), 2.)
+    
+    S = tf.stop_gradient(1. - iou)
+    alpha = tf.stop_gradient(v / (S + v))
+    
+    cious = iou - (u + alpha * v)
+    cious = tf.clip_by_value(cious, -1.0, 1.0)
+    
+    if exchange:
+        cious = tf.transpose(cious)
+    
+    return 1. - cious
+
+def iou_loss(mode, phi, weight, anchor_parameters=None, freeze_iterations=0):
     
     assert phi in range(7)
     image_sizes = [512, 640, 768, 896, 1024, 1280, 1408]
-    input_size = image_sizes[phi]
+    input_size = float(image_sizes[phi])
+    it = 0
     
     def _iou(y_true, y_pred):
+        nonlocal it
+        
         # separate target and state
         regression = y_pred
         regression_target = y_true[:, :, :-1]
@@ -267,7 +341,10 @@ def iou_loss(mode, phi, anchor_parameters=None):
         regression_target = tf.gather_nd(regression_target, indices)
         
         if 'piou' in mode:
-            loss = calc_piou(mode, regression_target, regression)
+            loss = calc_piou(mode, regression_target, regression, freezed=freeze_iterations>it)
+            it += 1
+        elif mode in ('diou', 'ciou'):
+            loss = calc_diou_ciou(mode, regression, regression_target)
         else:
             # requires: y_min, x_min, y_max, x_max
             xmin, ymin, xmax, ymax = tf.unstack(regression, axis=-1)
@@ -278,6 +355,6 @@ def iou_loss(mode, phi, anchor_parameters=None):
             
             loss = tfa.losses.GIoULoss(mode=mode, reduction=tf.keras.losses.Reduction.NONE) (regression_target, regression)
         
-        return tf.where(tf.math.is_nan(loss), 0., loss)
+        return weight * loss
 
     return _iou

@@ -20,7 +20,7 @@ def serialize_example(image, regression, class_):
     example_proto = tf.train.Example(features=tf.train.Features(feature=feature))
     return example_proto.SerializeToString()
 
-def create_tfrecords(tfrecords_path, mode, generator):
+def create_tfrecords(tfrecords_path, mode, generator, repetitions=1):
     
     img, (reg, clas) = generator[0]
     
@@ -33,11 +33,12 @@ def create_tfrecords(tfrecords_path, mode, generator):
             image=img_shape, reg=reg_shape, clas=class_shape)
     
     # create and save tfrecords
-    it = 10 if mode=='train' else 1
+    it = repetitions
     
-    with tf.io.TFRecordWriter(os.path.join(tfrecords_path, mode+'.tfrec'), options=tf.io.TFRecordOptions(compression_type='GZIP')) as writer:
-        for i in range(it):
-            print(f'Iteration {i+1}/{it}...')
+    for i in range(it):
+        print(f'Iteration {i+1}/{it}...')
+        
+        with tf.io.TFRecordWriter(os.path.join(tfrecords_path, mode+f'{i}.tfrec'), options=tf.io.TFRecordOptions(compression_type='GZIP')) as writer:
             for img, (reg, clas) in tqdm(generator):
                 img = np.squeeze(img)
                 reg = np.squeeze(reg)
@@ -70,7 +71,7 @@ def get_loader(tfrecords_path, mode, batch_size):
     ignore_order = tf.data.Options()
     ignore_order.experimental_deterministic = False
     
-    dataset = tf.data.TFRecordDataset(os.path.join(tfrecords_path, mode+'.tfrec'),\
+    dataset = tf.data.TFRecordDataset(tf.io.gfile.glob(os.path.join(tfrecords_path, mode+'*.tfrec')),\
                                       compression_type='GZIP',\
                                       num_parallel_reads=tf.data.experimental.AUTOTUNE)
     dataset = dataset.with_options(ignore_order)

@@ -19,6 +19,7 @@ silence_tensorflow()
 
 import argparse
 from datetime import date
+from glob import glob
 import os
 import sys
 import numpy as np
@@ -122,7 +123,7 @@ def create_callbacks(training_model, prediction_model, validation_generator, arg
     # save weights each 10 epochs after 50 epochs
     def save_weigths(epoch, logs):
         if epoch>50 and (epoch-1)%10==0:
-            model.save_weights(os.path.join(args.snapshot_path, f'{args.dataset_type}_{epoch}.h5'))
+            self.model.save_weights(os.path.join(args.snapshot_path, f'{args.dataset_type}_{epoch}.h5'))
     
     callbacks.extend([
         keras.callbacks.ReduceLROnPlateau(
@@ -139,7 +140,7 @@ def create_callbacks(training_model, prediction_model, validation_generator, arg
         keras.callbacks.EarlyStopping(
             patience = 10),
         keras.callbacks.TerminateOnNaN(),
-        keras.callbacks.LambdaCallback(on_epoch_end = save_weigths)
+        #keras.callbacks.LambdaCallback(on_epoch_end = save_weigths)
     ])
 
     return callbacks
@@ -296,8 +297,10 @@ def parse_args(args):
     parser.add_argument('--compute-val-loss', help='Compute validation loss during training', dest='compute_val_loss',
                         action='store_true')
     parser.add_argument('--loss', help='Loss function to be used.', default='l1', type=str, \
-                        choices=('l1', 'piou_l1', 'piou_l2', 'piou_l3', 'piou_smooth', 'giou', 'iou'))
+                        choices=('l1', 'piou_l1', 'piou_l2', 'piou_l3', 'giou', 'iou', 'diou', 'ciou'))
+    parser.add_argument('--regression_weight', help='Weight multiplying regression loss.', default=1., type=float)
     parser.add_argument('--use_tfrecords', help='If to use tfrecords. If no tfrecords available, it will create them.', action='store_true')
+    parser.add_argument('--freeze_iterations', help='Iterations to freezed W and H learning.', default=0, type=int)
     
     # Fit generator arguments
     parser.add_argument('--multiprocessing', help='Use multiprocessing in fit_generator.', action='store_true')
@@ -323,7 +326,11 @@ def main(args=None):
     # optionally choose specific GPU
     if args.gpu:
         os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
-    strategy = tf.distribute.MirroredStrategy()
+        
+    if len(tf.config.experimental.list_physical_devices('GPU'))>1:
+        strategy = tf.distribute.MirroredStrategy()
+    else:
+        strategy = tf.distribute.get_strategy()
 
     # K.set_session(get_session())
     
@@ -361,10 +368,16 @@ def main(args=None):
     if args.loss=='l1':
         regression_loss = smooth_l1_quad() if args.detect_quadrangle else smooth_l1()
     else:
-        regression_loss = iou_loss(mode=args.loss, phi=args.phi)
+        regression_loss = iou_loss(mode=args.loss, phi=args.phi,\
+                                   weight=args.regression_weight,\
+                                   freeze_iterations=args.freeze_iterations)
     
     with strategy.scope():
-        model.compile(optimizer=Adam(lr=args.lr), loss={
+        if 'piou' in args.loss:
+            optimizer = Adam(lr=args.lr, epsilon=1e-3, clipvalue=10.)
+        else:
+            optimizer = Adam(lr=args.lr)
+        model.compile(optimizer=optimizer, loss={
             'regression': regression_loss,
             'classification': focal()
         }, )
@@ -384,18 +397,17 @@ def main(args=None):
             data_path = args.coco_path
         else:
             raise Exception('Not implemented yet! Try not using tfrecords option...')
-        path_tfrecords = os.path.join(data_path, 'tfrecords')
+        path_tfrecords = os.path.join(data_path, f'tfrecords_phi{args.phi}')
+        os.makedirs(path_tfrecords, exist_ok=True)
         
         # create tfrecords files
-        if not (exists(join(path_tfrecords, 'train.tfrec')) and exists(join(path_tfrecords, 'val.tfrec'))):
-
-            path_tfrecords = join(data_path, 'tfrecords')
-            os.makedirs(path_tfrecords, exist_ok=True)
-
+        if not glob(join(path_tfrecords, 'train*.tfrec')):
             print('Creating tfrecords for train data...')
-            create_tfrecords(path_tfrecords, 'train', train_generator)
+            create_tfrecords(path_tfrecords, 'train', train_generator, repetitions=10 if args.dataset_type == 'pascal' else 2)
+                
+        if not glob(join(path_tfrecords, 'val*.tfrec')):
             print('Creating tfrecords for validation data...')
-            create_tfrecords(path_tfrecords, 'val', validation_generator)
+            create_tfrecords(path_tfrecords, 'val', validation_generator, repetitions=1)
             
         # get tfrecords loaders
         train_generator = get_loader(path_tfrecords, 'train', args.batch_size)
