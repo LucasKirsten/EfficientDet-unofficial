@@ -248,6 +248,19 @@ def calc_piou(mode, target, pred, freezed=False):
     if mode=='piou_l3':
         return l3
     
+    # smooth probIoU
+    l1_f = helinger_dist(
+                *get_piou_values(target),
+                *get_piou_values(pred),
+                freezed=True
+            )
+    l1_nf = helinger_dist(
+                *get_piou_values(target),
+                *get_piou_values(pred),
+                freezed=False
+            )
+    return tf.where(l1_nf>0.4, l1_f, l1_nf)
+    
 def calc_diou_ciou(mode, bboxes1, bboxes2):
     # xmin, ymin, xmax, ymax
     
@@ -355,6 +368,6 @@ def iou_loss(mode, phi, weight, anchor_parameters=None, freeze_iterations=0):
             
             loss = tfa.losses.GIoULoss(mode=mode, reduction=tf.keras.losses.Reduction.NONE) (regression_target, regression)
         
-        return weight * loss
+        return tf.cast(weight, 'float32') * loss
 
     return _iou
