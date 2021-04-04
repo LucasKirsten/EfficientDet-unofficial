@@ -310,7 +310,7 @@ class BoxNet(models.Model):
         self.num_anchors = num_anchors
         self.separable_conv = separable_conv
         self.detect_quadrangle = detect_quadrangle
-        num_values = 9 if detect_quadrangle else 4
+        num_values = 9 if detect_quadrangle else 5
         options = {
             'kernel_size': 3,
             'strides': 1,
@@ -348,7 +348,7 @@ class BoxNet(models.Model):
         feature, level = inputs
         for i in range(self.depth):
             feature = self.convs[i](feature)
-            feature = self.bns[i][self.level](feature)
+            feature = self.bns[i][level](feature)
             feature = self.relu(feature)
         outputs = self.head(feature)
         outputs = self.reshape(outputs)
@@ -407,7 +407,7 @@ class ClassNet(models.Model):
         feature, level = inputs
         for i in range(self.depth):
             feature = self.convs[i](feature)
-            feature = self.bns[i][self.level](feature)
+            feature = self.bns[i][level](feature)
             feature = self.relu(feature)
         outputs = self.head(feature)
         outputs = self.reshape(outputs)
@@ -447,12 +447,13 @@ def efficientdet(phi, num_classes=20, num_anchors=9, weighted_bifpn=False, freez
     regression = layers.Concatenate(axis=1, name='regression')(regression)
 
     model = models.Model(inputs=[image_input], outputs=[classification, regression], name='efficientdet')
-
+    
     # apply predicted regression to anchors
+    angles = regression[...,-1]
     anchors = anchors_for_shape((input_size, input_size), anchor_params=anchor_parameters)
     anchors_input = np.expand_dims(anchors, axis=0)
     boxes = RegressBoxes(name='boxes')([anchors_input, regression[..., :4]])
-    boxes = ClipBoxes(name='clipped_boxes')([image_input, boxes])
+    #boxes = ClipBoxes(name='clipped_boxes')([image_input, boxes])
 
     # filter detections (apply NMS / score threshold / select top-k)
     if detect_quadrangle:
@@ -464,7 +465,8 @@ def efficientdet(phi, num_classes=20, num_anchors=9, weighted_bifpn=False, freez
     else:
         detections = FilterDetections(
             name='filtered_detections',
-            score_threshold=score_threshold
+            score_threshold=score_threshold,
+            nms_threshold=0.3
         )([boxes, classification])
 
     prediction_model = models.Model(inputs=[image_input], outputs=detections, name='efficientdet_p')

@@ -24,7 +24,7 @@ import os
 import sys
 import numpy as np
 import tensorflow as tf
-import tensorflow_addons as tfa
+import pandas as pd
 
 from tensorflow import keras
 import tensorflow.keras.backend as K
@@ -137,8 +137,6 @@ def create_callbacks(training_model, prediction_model, validation_generator, arg
         keras.callbacks.CSVLogger(
             filename = os.path.join(args.snapshot_path, f'{args.dataset_type}_history.csv'),
             append = True),
-        keras.callbacks.EarlyStopping(
-            patience = 10),
         keras.callbacks.TerminateOnNaN(),
         #keras.callbacks.LambdaCallback(on_epoch_end = save_weigths)
     ])
@@ -162,7 +160,7 @@ def create_generators(args):
 
     # create random transform generator for augmenting training data
     if args.random_transform:
-        misc_effect = MiscEffect()
+        misc_effect = None #MiscEffect()
         visual_effect = VisualEffect()
     else:
         misc_effect = None
@@ -189,8 +187,9 @@ def create_generators(args):
     elif args.dataset_type == 'csv':
         from generators.csv_ import CSVGenerator
         train_generator = CSVGenerator(
-            args.annotations_path,
-            args.classes_path,
+            csv_data_file=args.annotations_path,
+            csv_class_file=args.classes_path,
+            base_dir=args.base_dir_train,
             misc_effect=misc_effect,
             visual_effect=visual_effect,
             **common_args
@@ -198,8 +197,9 @@ def create_generators(args):
 
         if args.val_annotations_path:
             validation_generator = CSVGenerator(
-                args.val_annotations_path,
-                args.classes_path,
+                csv_data_file=args.val_annotations_path,
+                csv_class_file=args.classes_path,
+                base_dir=args.base_dir_val,
                 shuffle_groups=False,
                 **common_args
             )
@@ -267,10 +267,12 @@ def parse_args(args):
     pascal_parser.add_argument('pascal_path', help='Path to dataset directory (ie. /tmp/VOCdevkit).')
 
     csv_parser = subparsers.add_parser('csv')
-    csv_parser.add_argument('annotations_path', help='Path to CSV file containing annotations for training.')
-    csv_parser.add_argument('classes_path', help='Path to a CSV file containing class label mapping.')
-    csv_parser.add_argument('--val-annotations-path',
+    csv_parser.add_argument('--annotations_path', help='Path to CSV file containing annotations for training.')
+    csv_parser.add_argument('--base_dir_train', help='Path to images for training.')
+    csv_parser.add_argument('--classes_path', help='Path to a CSV file containing class label mapping.')
+    csv_parser.add_argument('--val_annotations_path',
                             help='Path to CSV file containing annotations for validation (optional).')
+    csv_parser.add_argument('--base_dir_val', help='Path to images for validation.')
     parser.add_argument('--detect-quadrangle', help='If to detect quadrangle.', action='store_true', default=False)
     parser.add_argument('--detect-text', help='If is text detection task.', action='store_true', default=False)
 
@@ -297,10 +299,12 @@ def parse_args(args):
     parser.add_argument('--compute-val-loss', help='Compute validation loss during training', dest='compute_val_loss',
                         action='store_true')
     parser.add_argument('--loss', help='Loss function to be used.', default='l1', type=str, \
-                        choices=('l1', 'piou_l1', 'piou_l2', 'piou_l3', 'piou_smooth', 'giou', 'iou', 'diou', 'ciou'))
+                        choices=('l1', 'piou_l1', 'piou_l2', 'piou_l3'))
     parser.add_argument('--regression_weight', help='Weight multiplying regression loss.', default=1., type=float)
     parser.add_argument('--use_tfrecords', help='If to use tfrecords. If no tfrecords available, it will create them.', action='store_true')
+    parser.add_argument('--use_classweights', help='If to use class weights to balance training.', action='store_true')
     parser.add_argument('--freeze_iterations', help='Iterations to freezed W and H learning.', default=0, type=int)
+    parser.add_argument('--steps_per_epoch', help='Iterations per epoch. If 0, it will iterate over all dataset.', default=0, type=int)
     
     # Fit generator arguments
     parser.add_argument('--multiprocessing', help='Use multiprocessing in fit_generator.', action='store_true')
@@ -374,7 +378,7 @@ def main(args=None):
     
     with strategy.scope():
         if 'piou' in args.loss:
-            optimizer = Adam(lr=args.lr, epsilon=1e-3, clipvalue=10.)
+            optimizer = Adam(lr=args.lr, epsilon=1e-3) #, clipvalue=10.
         else:
             optimizer = Adam(lr=args.lr)
         model.compile(optimizer=optimizer, loss={
@@ -395,6 +399,9 @@ def main(args=None):
             data_path = args.pascal_path
         elif args.dataset_type == 'coco':
             data_path = args.coco_path
+        elif args.dataset_type =='csv':
+            data_path = os.path.split(args.base_dir_train)
+            data_path = os.path.join(*data_path[:-1])
         else:
             raise Exception('Not implemented yet! Try not using tfrecords option...')
         path_tfrecords = os.path.join(data_path, f'tfrecords_phi{args.phi}')
@@ -403,7 +410,7 @@ def main(args=None):
         # create tfrecords files
         if not glob(join(path_tfrecords, 'train*.tfrec')):
             print('Creating tfrecords for train data...')
-            create_tfrecords(path_tfrecords, 'train', train_generator, repetitions=10 if args.dataset_type == 'pascal' else 2)
+            create_tfrecords(path_tfrecords, 'train', train_generator, repetitions=1)
                 
         if not glob(join(path_tfrecords, 'val*.tfrec')):
             print('Creating tfrecords for validation data...')
@@ -426,14 +433,34 @@ def main(args=None):
     elif args.compute_val_loss and validation_generator is None:
         raise ValueError('When you have no validation data, you should not specify --compute-val-loss.')
     
+    if args.steps_per_epoch<1:
+        args.steps_per_epoch = len(train_generator)
+        
+    if args.use_classweights:
+        raise Exception('Not implemented!')
+        from sklearn.utils import class_weight
+        # open necessary csv files
+        df_train = pd.read_csv(args.annotations_path)
+        df_classes = pd.read_csv(args.classes_path)
+        
+        # map from classes to ids
+        name_id = dict(zip(list(df_classes['name']), list(df_classes['id'])))
+        df_train = df_train.replace({'label':name_id})
+        
+        # compute class weights
+        class_weights = class_weight.compute_class_weight('balanced', np.unique(df_train['label']), np.array(df_train['label']))
+        print('Class weights:\n', dict(zip(list(df_classes['name']), class_weights)))
+        class_weights = dict(zip(range(len(class_weights)), class_weights))
+    
     # start training
     return model.fit(
         train_generator,
-        steps_per_epoch=train_steps,
+        steps_per_epoch=args.steps_per_epoch,
         epochs=args.epochs,
         callbacks=callbacks,
         validation_data=validation_generator,
-        validation_steps=validation_steps
+        validation_steps=validation_steps,
+        class_weight={'classification':class_weights} if args.use_classweights else None
     )
 
 if __name__ == '__main__':

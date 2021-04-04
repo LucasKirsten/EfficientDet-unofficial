@@ -1,7 +1,7 @@
 # import keras
 from tensorflow import keras
 import tensorflow as tf
-
+import numpy as np
 
 class BatchNormalization(keras.layers.BatchNormalization):
     """
@@ -77,7 +77,9 @@ def bbox_transform_inv(boxes, deltas, scale_factors=None):
     xmin = cx - w / 2.
     ymax = cy + h / 2.
     xmax = cx + w / 2.
-    return tf.stack([xmin, ymin, xmax, ymax], axis=-1)
+    
+    angle = deltas[..., -1] + np.pi/2
+    return tf.stack([xmin, ymin, xmax, ymax, angle], axis=-1)
 
 
 class ClipBoxes(keras.layers.Layer):
@@ -91,7 +93,7 @@ class ClipBoxes(keras.layers.Layer):
         x2 = tf.clip_by_value(boxes[:, :, 2], 0, width - 1)
         y2 = tf.clip_by_value(boxes[:, :, 3], 0, height - 1)
 
-        return keras.backend.stack([x1, y1, x2, y2], axis=2)
+        return keras.backend.stack([x1, y1, x2, y2, boxes[...,-1]], axis=2)
 
     def compute_output_shape(self, input_shape):
         return input_shape[1]
@@ -116,6 +118,7 @@ class RegressBoxes(keras.layers.Layer):
 def filter_detections(
         boxes,
         classification,
+        angle,
         alphas=None,
         ratios=None,
         class_specific_filter=True,
@@ -214,6 +217,7 @@ def filter_detections(
     indices = keras.backend.gather(indices[:, 0], top_indices)
     boxes = keras.backend.gather(boxes, indices)
     labels = keras.backend.gather(labels, top_indices)
+    angle = keras.backend.gather(angle, top_indices)
 
     # zero pad the outputs
     pad_size = keras.backend.maximum(0, max_detections - keras.backend.shape(scores)[0])
@@ -221,11 +225,13 @@ def filter_detections(
     scores = tf.pad(scores, [[0, pad_size]], constant_values=-1)
     labels = tf.pad(labels, [[0, pad_size]], constant_values=-1)
     labels = keras.backend.cast(labels, 'int32')
+    angle = tf.pad(angle, [[0, pad_size]], constant_values=-1)
 
     # set shapes, since we know what they are
     boxes.set_shape([max_detections, 4])
     scores.set_shape([max_detections])
     labels.set_shape([max_detections])
+    angle.set_shape([max_detections])
 
     if detect_quadrangle:
         alphas = keras.backend.gather(alphas, indices)
@@ -236,7 +242,7 @@ def filter_detections(
         ratios.set_shape([max_detections])
         return [boxes, scores, alphas, ratios, labels]
     else:
-        return [boxes, scores, labels]
+        return [tf.concat([boxes, angle[...,tf.newaxis]], axis=-1), scores, labels]
 
 
 class FilterDetections(keras.layers.Layer):
@@ -282,22 +288,25 @@ class FilterDetections(keras.layers.Layer):
         Args
             inputs : List of [boxes, classification, other[0], other[1], ...] tensors.
         """
-        boxes = inputs[0]
+        boxes = inputs[0][...,:4]
+        angle = inputs[0][...,-1]
         classification = inputs[1]
         if self.detect_quadrangle:
-            alphas = inputs[2]
-            ratios = inputs[3]
+            alphas = inputs[3]
+            ratios = inputs[4]
 
         # wrap nms with our parameters
         def _filter_detections(args):
             boxes_ = args[0]
             classification_ = args[1]
-            alphas_ = args[2] if self.detect_quadrangle else None
-            ratios_ = args[3] if self.detect_quadrangle else None
+            angle_ = args[2]
+            alphas_ = args[3] if self.detect_quadrangle else None
+            ratios_ = args[4] if self.detect_quadrangle else None
 
             return filter_detections(
                 boxes_,
                 classification_,
+                angle_,
                 alphas_,
                 ratios_,
                 nms=self.nms,
@@ -312,14 +321,14 @@ class FilterDetections(keras.layers.Layer):
         if self.detect_quadrangle:
             outputs = tf.map_fn(
                 _filter_detections,
-                elems=[boxes, classification, alphas, ratios],
+                elems=[boxes, classification, angle, alphas, ratios],
                 dtype=['float32', 'float32', 'float32', 'float32', 'int32'],
                 parallel_iterations=self.parallel_iterations
             )
         else:
             outputs = tf.map_fn(
                 _filter_detections,
-                elems=[boxes, classification],
+                elems=[boxes, classification, angle],
                 dtype=['float32', 'float32', 'int32'],
                 parallel_iterations=self.parallel_iterations
             )

@@ -46,6 +46,8 @@ def _read_classes(csv_reader):
     """
     result = OrderedDict()
     for line, row in enumerate(csv_reader):
+        if line==0: continue #remove head
+            
         line += 1
 
         try:
@@ -125,31 +127,33 @@ def _read_annotations(csv_reader, classes):
     """
     result = OrderedDict()
     for line, row in enumerate(csv_reader, 1):
+        if line==1: continue #remove head
+            
         try:
-            img_file, x1, y1, x2, y2, class_name = row[:10]
+            img_file, x1, y1, x2, y2, class_name, angle = row
             if img_file not in result:
                 result[img_file] = []
 
             # If a row contains only an image path, it's an image without annotations.
-            if (x1, y1, x2, y2, class_name) == ('', '', '', '', ''):
+            if (x1, y1, x2, y2, class_name, angle) == ('', '', '', '', '', ''):
                 continue
 
-            x1 = _parse(x1, int, 'line {}: malformed x1: {{}}'.format(line))
-            y1 = _parse(y1, int, 'line {}: malformed y1: {{}}'.format(line))
-            x2 = _parse(x2, int, 'line {}: malformed x2: {{}}'.format(line))
-            y2 = _parse(y2, int, 'line {}: malformed y2: {{}}'.format(line))
+            x1 = int(_parse(x1, float, 'line {}: malformed x1: {{}}'.format(line)))
+            y1 = int(_parse(y1, float, 'line {}: malformed y1: {{}}'.format(line)))
+            x2 = int(_parse(x2, float, 'line {}: malformed x2: {{}}'.format(line)))
+            y2 = int(_parse(y2, float, 'line {}: malformed y2: {{}}'.format(line)))
+            angle = _parse(angle, float, 'line {}: malformed angle: {{}}'.format(line))
 
             if class_name not in classes:
                 raise ValueError(f'line {line}: unknown class name: \'{class_name}\' (classes: {classes})')
 
-            result[img_file].append({'x1': x1, 'y1': y1, 'x2': x2, 'y2': y2, 'class': class_name})
+            result[img_file].append({'x1': x1, 'y1': y1, 'x2': x2, 'y2': y2, 'angle': angle, 'class': class_name})
         except ValueError:
             raise_from(ValueError(
                 f'line {line}: format should be \'img_file,x1,y1,x2,y2,class_name\' or \'img_file,,,,,\''),
                 None)
 
     return result
-
 
 def _open_for_csv(path):
     """
@@ -294,11 +298,13 @@ class CSVGenerator(Generator):
         path = self.image_names[image_index]
         annotations = {'labels': np.empty((0,), dtype=np.int32),
                        'bboxes': np.empty((0, 4), dtype=np.float32),
+                       'angle': np.empty((0,), dtype=np.float32),
                        'quadrangles': np.empty((0, 4, 2), dtype=np.float32),
                        }
 
         for idx, annot in enumerate(self.image_data[path]):
             annotations['labels'] = np.concatenate((annotations['labels'], [self.name_to_label(annot['class'])]))
+            annotations['angle'] = np.concatenate((annotations['angle'], [annot['angle']]))
             if self.detect_quadrangle:
                 quadrangle = np.array([[float(annot['x1']), float(annot['y1'])],
                                        [float(annot['x2']), float(annot['y2'])],
@@ -317,7 +323,7 @@ class CSVGenerator(Generator):
                     float(annot['x1']),
                     float(annot['y1']),
                     float(annot['x2']),
-                    float(annot['y2']),
+                    float(annot['y2'])
                 ]]))
         return annotations
 

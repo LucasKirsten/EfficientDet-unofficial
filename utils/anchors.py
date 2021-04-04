@@ -1,11 +1,11 @@
 import pyximport
 pyximport.install()
 
-# import keras
+import tensorflow as tf
 import numpy as np
 from tensorflow import keras
 
-from utils.compute_overlap import compute_overlap
+from utils.compute_overlap_piou import compute_overlap
 
 
 class AnchorParameters:
@@ -35,11 +35,20 @@ class AnchorParameters:
 """
 The default anchor parameters.
 """
+#AnchorParameters.default = AnchorParameters(
+#    sizes=[32, 64, 128, 256, 512],
+#    strides=[8, 16, 32, 64, 128],
+#    # ratio=h/w
+#    ratios=np.array([1, 0.5, 0.3], keras.backend.floatx()),
+#    scales=np.array([2 ** 0, 2 ** (1.0 / 3.0), 2 ** (2.0 / 3.0)], keras.backend.floatx()),
+#)
+
+# cats and dogs
 AnchorParameters.default = AnchorParameters(
-    sizes=[32, 64, 128, 256, 512],
+    sizes=[133, 267, 400, 534, 667],
     strides=[8, 16, 32, 64, 128],
     # ratio=h/w
-    ratios=np.array([1, 0.5, 2], keras.backend.floatx()),
+    ratios=np.array([1, 0.5], keras.backend.floatx()),
     scales=np.array([2 ** 0, 2 ** (1.0 / 3.0), 2 ** (2.0 / 3.0)], keras.backend.floatx()),
 )
 
@@ -49,8 +58,8 @@ def anchor_targets_bbox(
         image_group,
         annotations_group,
         num_classes,
-        negative_overlap=0.4,
-        positive_overlap=0.5,
+        negative_overlap=0.3,
+        positive_overlap=0.4,
         detect_quadrangle=False
 ):
     """
@@ -86,8 +95,11 @@ def anchor_targets_bbox(
     if detect_quadrangle:
         regression_batch = np.zeros((batch_size, anchors.shape[0], 9 + 1), dtype=np.float32)
     else:
-        regression_batch = np.zeros((batch_size, anchors.shape[0], 4 + 1), dtype=np.float32)
+        regression_batch = np.zeros((batch_size, anchors.shape[0], 5 + 1), dtype=np.float32)
     labels_batch = np.zeros((batch_size, anchors.shape[0], num_classes + 1), dtype=np.float32)
+    
+    # add angles to boxes
+    annotations['bboxes'] = np.concatenate([annotations['bboxes'], annotations['angle'][...,np.newaxis]], axis=-1)
 
     # compute labels and regression targets
     for index, (image, annotations) in enumerate(zip(image_group, annotations_group)):
@@ -109,7 +121,7 @@ def anchor_targets_bbox(
             labels_batch[
                 index, positive_indices, annotations['labels'][argmax_overlaps_inds[positive_indices]].astype(int)] = 1
 
-            regression_batch[index, :, :4] = bbox_transform(anchors, annotations['bboxes'][argmax_overlaps_inds, :])
+            regression_batch[index, :, :5] = bbox_transform(anchors, annotations['bboxes'][argmax_overlaps_inds, :])
             if detect_quadrangle:
                 regression_batch[index, :, 4:8] = annotations['alphas'][argmax_overlaps_inds, :]
                 regression_batch[index, :, 8] = annotations['ratios'][argmax_overlaps_inds]
@@ -331,6 +343,7 @@ def generate_anchors(base_size=16, ratios=None, scales=None):
 
 
 def bbox_transform(anchors, gt_boxes, scale_factors=None):
+    # xmin, xmax, ymin, ymax
     wa = anchors[:, 2] - anchors[:, 0]
     ha = anchors[:, 3] - anchors[:, 1]
     cxa = anchors[:, 0] + wa / 2.
@@ -354,5 +367,5 @@ def bbox_transform(anchors, gt_boxes, scale_factors=None):
         tx /= scale_factors[1]
         th /= scale_factors[2]
         tw /= scale_factors[3]
-    targets = np.stack([ty, tx, th, tw], axis=1)
+    targets = np.stack([ty, tx, th, tw, gt_boxes[...,-1]], axis=1)
     return targets

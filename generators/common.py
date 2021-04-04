@@ -208,7 +208,7 @@ class Generator(keras.utils.Sequence):
             )[0]
 
             # delete invalid indices
-            if len(small_indices):
+            if len(small_indices)>0:
                 for k in annotations_group[index].keys():
                     annotations_group[index][k] = np.delete(annotations[k], small_indices, axis=0)
                 # import cv2
@@ -298,12 +298,13 @@ class Generator(keras.utils.Sequence):
         """
 
         # preprocess the image
-        image, scale = self.preprocess_image(image)
+        image = self.preprocess_image(image)
 
         # apply resizing to annotations too
-        annotations['bboxes'] *= scale
+        #annotations['bboxes'] *= scale
         if self.detect_quadrangle:
             annotations['quadrangles'] *= scale
+        annotations['angle'] = annotations['angle'] - np.pi/2
         return image, annotations
 
     def preprocess_group(self, image_group, annotations_group):
@@ -367,9 +368,6 @@ class Generator(keras.utils.Sequence):
         """
         Compute target outputs for the network using images and their annotations.
         """
-        """
-        Compute target outputs for the network using images and their annotations.
-        """
 
         batches_targets = anchor_targets_bbox(
             self.anchors,
@@ -391,22 +389,22 @@ class Generator(keras.utils.Sequence):
         annotations_group = self.load_annotations_group(group)
 
         # check validity of annotations
-        image_group, annotations_group = self.filter_annotations(image_group, annotations_group, group)
+        #image_group, annotations_group = self.filter_annotations(image_group, annotations_group, group)
 
         # randomly apply visual effect
-        image_group, annotations_group = self.random_visual_effect_group(image_group, annotations_group)
+        #image_group, annotations_group = self.random_visual_effect_group(image_group, annotations_group)
 
         # randomly transform data
         # image_group, annotations_group = self.random_transform_group(image_group, annotations_group)
 
         # randomly apply misc effect
-        image_group, annotations_group = self.random_misc_group(image_group, annotations_group)
+        #image_group, annotations_group = self.random_misc_group(image_group, annotations_group)
 
         # perform preprocessing steps
         image_group, annotations_group = self.preprocess_group(image_group, annotations_group)
 
         # check validity of annotations
-        image_group, annotations_group = self.clip_transformed_annotations(image_group, annotations_group, group)
+        #image_group, annotations_group = self.clip_transformed_annotations(image_group, annotations_group, group)
 
         assert len(image_group) != 0
         assert len(image_group) == len(annotations_group)
@@ -443,27 +441,14 @@ class Generator(keras.utils.Sequence):
 
     def preprocess_image(self, image):
         # image, RGB
-        image_height, image_width = image.shape[:2]
-        if image_height > image_width:
-            scale = self.image_size / image_height
-            resized_height = self.image_size
-            resized_width = int(image_width * scale)
-        else:
-            scale = self.image_size / image_width
-            resized_height = int(image_height * scale)
-            resized_width = self.image_size
-
-        image = cv2.resize(image, (resized_width, resized_height))
+        image = cv2.resize(image, (self.image_size, self.image_size))
         image = image.astype(np.float32)
         image /= 255.
         mean = [0.485, 0.456, 0.406]
         std = [0.229, 0.224, 0.225]
         image -= mean
         image /= std
-        pad_h = self.image_size - resized_height
-        pad_w = self.image_size - resized_width
-        image = np.pad(image, [(0, pad_h), (0, pad_w), (0, 0)], mode='constant')
-        return image, scale
+        return image
 
     def get_augmented_data(self, group):
         """
@@ -491,7 +476,7 @@ class Generator(keras.utils.Sequence):
         image_group, annotations_group = self.preprocess_group(image_group, annotations_group)
 
         # check validity of annotations
-        image_group, annotations_group = self.clip_transformed_annotations(image_group, annotations_group, group)
+        #image_group, annotations_group = self.clip_transformed_annotations(image_group, annotations_group, group)
 
         assert len(image_group) != 0
         assert len(image_group) == len(annotations_group)
