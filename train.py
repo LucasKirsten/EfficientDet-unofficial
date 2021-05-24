@@ -299,7 +299,7 @@ def parse_args(args):
     parser.add_argument('--compute-val-loss', help='Compute validation loss during training', dest='compute_val_loss',
                         action='store_true')
     parser.add_argument('--loss', help='Loss function to be used.', default='l1', type=str, \
-                        choices=('l1', 'piou_l1', 'piou_l2', 'piou_l3'))
+                        choices=('piou_l1', 'piou_l2', 'piou_l3'))
     parser.add_argument('--regression_weight', help='Weight multiplying regression loss.', default=1., type=float)
     parser.add_argument('--use_tfrecords', help='If to use tfrecords. If no tfrecords available, it will create them.', action='store_true')
     parser.add_argument('--use_classweights', help='If to use class weights to balance training.', action='store_true')

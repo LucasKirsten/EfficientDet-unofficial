@@ -137,6 +137,8 @@ class Generator(keras.utils.Sequence):
 
         with Parallel(n_jobs=NUM_CORES, prefer="threads") as parallel:
             _ = parallel(delayed(set_ann)(i, image_index) for i,image_index in enumerate(group))
+            
+        print(annotations_group)
         
         for annotations in annotations_group:
             assert (isinstance(annotations,
@@ -304,7 +306,6 @@ class Generator(keras.utils.Sequence):
         #annotations['bboxes'] *= scale
         if self.detect_quadrangle:
             annotations['quadrangles'] *= scale
-        annotations['angle'] = annotations['angle'] - np.pi/2
         return image, annotations
 
     def preprocess_group(self, image_group, annotations_group):

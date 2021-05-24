@@ -78,7 +78,8 @@ def bbox_transform_inv(boxes, deltas, scale_factors=None):
     ymax = cy + h / 2.
     xmax = cx + w / 2.
     
-    angle = deltas[..., -1] + np.pi/2
+    angle = deltas[..., -1]
+    
     return tf.stack([xmin, ymin, xmax, ymax, angle], axis=-1)
 
 
@@ -92,8 +93,9 @@ class ClipBoxes(keras.layers.Layer):
         y1 = tf.clip_by_value(boxes[:, :, 1], 0, height - 1)
         x2 = tf.clip_by_value(boxes[:, :, 2], 0, width - 1)
         y2 = tf.clip_by_value(boxes[:, :, 3], 0, height - 1)
+        angles = boxes[:,:,4]
 
-        return keras.backend.stack([x1, y1, x2, y2, boxes[...,-1]], axis=2)
+        return keras.backend.stack([x1, y1, x2, y2, angles], axis=-1)
 
     def compute_output_shape(self, input_shape):
         return input_shape[1]

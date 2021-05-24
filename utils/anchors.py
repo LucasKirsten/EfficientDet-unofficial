@@ -45,10 +45,10 @@ The default anchor parameters.
 
 # cats and dogs
 AnchorParameters.default = AnchorParameters(
-    sizes=[133, 267, 400, 534, 667],
+    sizes=[32, 64, 128, 256, 512],
     strides=[8, 16, 32, 64, 128],
     # ratio=h/w
-    ratios=np.array([1, 0.5], keras.backend.floatx()),
+    ratios=np.array([1, 0.5, 2], keras.backend.floatx()),
     scales=np.array([2 ** 0, 2 ** (1.0 / 3.0), 2 ** (2.0 / 3.0)], keras.backend.floatx()),
 )
 
@@ -58,8 +58,8 @@ def anchor_targets_bbox(
         image_group,
         annotations_group,
         num_classes,
-        negative_overlap=0.3,
-        positive_overlap=0.4,
+        negative_overlap=0.4,
+        positive_overlap=0.5,
         detect_quadrangle=False
 ):
     """
@@ -367,5 +367,7 @@ def bbox_transform(anchors, gt_boxes, scale_factors=None):
         tx /= scale_factors[1]
         th /= scale_factors[2]
         tw /= scale_factors[3]
-    targets = np.stack([ty, tx, th, tw, gt_boxes[...,-1]], axis=1)
+    angle = gt_boxes[...,-1] - np.pi/2.
+    
+    targets = np.stack([ty, tx, th, tw, angle], axis=1)
     return targets
